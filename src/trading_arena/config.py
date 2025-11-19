@@ -25,6 +25,8 @@ class Config:
         # Admin credentials
         self.admin_username = os.getenv("ADMIN_USERNAME")
         self.admin_password = os.getenv("ADMIN_PASSWORD")
+        # Password mode: "plaintext" for development, "hashed" for production
+        self.password_mode = os.getenv("PASSWORD_MODE", "plaintext" if not self.is_production else "hashed")
 
         # Database configuration
         self.database_url = os.getenv("DATABASE_URL")

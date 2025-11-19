@@ -18,12 +18,31 @@ async def login(user_data: UserLogin, db: AsyncSession = Depends(get_db_session)
     # Validate credentials against configuration
     admin_username, admin_password = config.get_admin_credentials()
 
-    if user_data.username != admin_username or user_data.password != admin_password:
+    # Check username first
+    if user_data.username != admin_username:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    # Verify password based on mode
+    if config.password_mode == "hashed":
+        # Use bcrypt verification for hashed passwords
+        if not jwt_handler.verify_password(user_data.password, admin_password):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid credentials",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    else:
+        # Plaintext comparison for development
+        if user_data.password != admin_password:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid credentials",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
 
     # Check if admin user has agents in database
     result = await db.execute(

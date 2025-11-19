@@ -389,7 +389,7 @@ async def validate_database_startup() -> bool:
             result = await session.execute("""
                 SELECT COUNT(*) as count FROM information_schema.tables
                 WHERE table_schema = 'public' AND table_name IN (
-                    'agents', 'users', 'trading_sessions', 'competitions'
+                    'agents', 'trades', 'positions', 'competitions'
                 )
             """)
             critical_tables = result.scalar()

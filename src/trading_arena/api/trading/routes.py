@@ -12,6 +12,8 @@ from trading_arena.db import get_db_session
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_
 from trading_arena.models import Agent, Trade, Position
+from trading_arena.risk.manager import RiskManager
+from trading_arena.agents.agent_interface import Position as AgentPosition
 
 router = APIRouter()
 security = HTTPBearer()
@@ -163,23 +165,26 @@ async def get_agent(
 @router.post("/agents/{agent_id}/start")
 async def start_agent(
     agent_id: int,
-    user: dict = Depends(get_current_user)
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session)
 ):
     """Start trading agent"""
     try:
-        # Update agent status in database
-        async with get_db_session() as session:
-            agent = await session.get(Agent, agent_id)
-            if not agent:
-                raise HTTPException(status_code=404, detail="Agent not found")
+        # Get agent from database
+        result = await db.execute(
+            select(Agent).where(Agent.id == agent_id)
+        )
+        agent = result.scalar_one_or_none()
 
-            if agent.user_id != user["id"]:
-                raise HTTPException(status_code=403, detail="Not authorized to start this agent")
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
 
-            agent.is_active = True
-            agent.status = "running"
-            session.add(agent)
-            await session.commit()
+        if agent.owner != user["username"]:
+            raise HTTPException(status_code=403, detail="Not authorized to start this agent")
+
+        agent.status = "running"
+        db.add(agent)
+        await db.commit()
 
         return {"message": f"Agent {agent_id} started successfully", "status": "running"}
 
@@ -191,23 +196,26 @@ async def start_agent(
 @router.post("/agents/{agent_id}/stop")
 async def stop_agent(
     agent_id: int,
-    user: dict = Depends(get_current_user)
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session)
 ):
     """Stop trading agent"""
     try:
-        # Update agent status in database
-        async with get_db_session() as session:
-            agent = await session.get(Agent, agent_id)
-            if not agent:
-                raise HTTPException(status_code=404, detail="Agent not found")
+        # Get agent from database
+        result = await db.execute(
+            select(Agent).where(Agent.id == agent_id)
+        )
+        agent = result.scalar_one_or_none()
 
-            if agent.user_id != user["id"]:
-                raise HTTPException(status_code=403, detail="Not authorized to stop this agent")
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
 
-            agent.is_active = False
-            agent.status = "stopped"
-            session.add(agent)
-            await session.commit()
+        if agent.owner != user["username"]:
+            raise HTTPException(status_code=403, detail="Not authorized to stop this agent")
+
+        agent.status = "stopped"
+        db.add(agent)
+        await db.commit()
 
         return {"message": f"Agent {agent_id} stopped successfully", "status": "stopped"}
 
@@ -329,18 +337,65 @@ async def get_performance_metrics(
     total_return = ((total_current_capital - total_initial_capital) / total_initial_capital) if total_initial_capital > 0 else 0.0
 
     # Calculate profit factor
-    winning_pnl = sum(trade.pnl for trade in trades if trade.pnl > 0)
-    losing_pnl = abs(sum(trade.pnl for trade in trades if trade.pnl < 0))
+    winning_pnl = sum(trade.pnl for trade in trades if trade.pnl and trade.pnl > 0)
+    losing_pnl = abs(sum(trade.pnl for trade in trades if trade.pnl and trade.pnl < 0))
     profit_factor = (winning_pnl / losing_pnl) if losing_pnl > 0 else float('inf') if winning_pnl > 0 else 0.0
 
-    # Mock other metrics for now (would need more complex calculation)
-    return PerformanceMetrics(
-        sharpe_ratio=1.5,  # Would calculate from returns series
-        sortino_ratio=2.0,  # Would calculate from downside deviation
-        max_drawdown=0.15,  # Would calculate from equity curve
-        current_drawdown=0.05,  # Would calculate from current drawdown
-        volatility=0.20,  # Would calculate from returns standard deviation
-        total_return=total_return,
-        win_rate=win_rate,
-        profit_factor=profit_factor
+    # Calculate real metrics using RiskManager
+    risk_manager = RiskManager(lookback_days=30)
+
+    # Get current positions for all agents
+    positions_result = await db.execute(
+        select(Position)
+        .join(Agent, Position.agent_id == Agent.id)
+        .where(and_(
+            Agent.owner == user["username"],
+            Position.status == "open"
+        ))
     )
+    positions = positions_result.scalars().all()
+
+    # Convert to AgentPosition format for risk calculation
+    agent_positions = [
+        AgentPosition(
+            symbol=pos.symbol,
+            side=pos.position_side,
+            size=pos.quantity,
+            entry_price=pos.entry_price,
+            mark_price=pos.mark_price or pos.entry_price,
+            unrealized_pnl=pos.unrealized_pnl or 0.0
+        )
+        for pos in positions
+    ]
+
+    # Calculate risk metrics if we have trades
+    if trades:
+        risk_metrics = risk_manager.calculate_risk_metrics(
+            trades=list(trades),
+            positions=agent_positions,
+            current_capital=total_current_capital,
+            initial_capital=total_initial_capital
+        )
+
+        return PerformanceMetrics(
+            sharpe_ratio=risk_metrics.sharpe_ratio,
+            sortino_ratio=risk_metrics.sortino_ratio,
+            max_drawdown=risk_metrics.max_drawdown,
+            current_drawdown=risk_metrics.current_drawdown,
+            volatility=risk_metrics.volatility,
+            total_return=total_return,
+            win_rate=win_rate,
+            profit_factor=profit_factor
+        )
+    else:
+        # Return zeros if no trades yet
+        return PerformanceMetrics(
+            sharpe_ratio=0.0,
+            sortino_ratio=0.0,
+            max_drawdown=0.0,
+            current_drawdown=0.0,
+            volatility=0.0,
+            total_return=total_return,
+            win_rate=win_rate,
+            profit_factor=profit_factor
+        )
