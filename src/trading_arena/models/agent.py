@@ -85,15 +85,19 @@ class Agent(Base):
     @property
     def win_rate(self) -> float:
         """Calculate win rate from trades"""
-        if self.total_trades == 0:
+        if not self.total_trades or self.total_trades == 0:
+            return 0.0
+        if not self.winning_trades:
             return 0.0
         return self.winning_trades / self.total_trades
 
     @property
     def current_return(self) -> float:
         """Calculate return percentage from initial capital"""
-        if self.initial_capital == 0:
+        if not self.initial_capital or self.initial_capital == 0:
             return 0.0
+        if not self.current_capital:
+            return -1.0  # 100% loss if no capital
         return (self.current_capital - self.initial_capital) / self.initial_capital
 
     @property

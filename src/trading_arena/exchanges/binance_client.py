@@ -75,13 +75,22 @@ class BinanceFuturesClient:
         if not self.client:
             await self.connect()
 
-        try:
-            account_info = await self.client.futures_account()
-            logger.debug("Retrieved account information")
-            return account_info
-        except BinanceAPIException as e:
-            logger.error(f"Failed to get account info: {e}")
-            raise
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                account_info = await self.client.futures_account()
+                logger.debug("Retrieved account information")
+                return account_info
+            except BinanceAPIException as e:
+                logger.error(f"Failed to get account info (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt == max_retries - 1:
+                    raise
+                await asyncio.sleep(1 * (attempt + 1))  # Exponential backoff
+            except Exception as e:
+                logger.error(f"Unexpected error getting account info: {e}")
+                if attempt == max_retries - 1:
+                    raise
+                await asyncio.sleep(1 * (attempt + 1))
 
     async def get_open_positions(self) -> List[Dict]:
         """
@@ -120,9 +129,20 @@ class BinanceFuturesClient:
 
         Raises:
             BinanceAPIException: If order placement fails
+            ValueError: If parameters are invalid
         """
         if not self.client:
             await self.connect()
+
+        # Validate parameters
+        if not symbol or not isinstance(symbol, str):
+            raise ValueError(f"Invalid symbol: {symbol}")
+
+        if side not in ['BUY', 'SELL']:
+            raise ValueError(f"Invalid side: {side}. Must be BUY or SELL")
+
+        if not quantity or quantity <= 0:
+            raise ValueError(f"Invalid quantity: {quantity}. Must be positive")
 
         try:
             order = await self.client.futures_create_order(
@@ -135,6 +155,9 @@ class BinanceFuturesClient:
             return order
         except BinanceAPIException as e:
             logger.error(f"Failed to place market order: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error placing market order: {e}")
             raise
 
     async def set_leverage(self, symbol: str, leverage: int) -> Dict:

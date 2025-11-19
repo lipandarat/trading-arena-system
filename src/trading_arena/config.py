@@ -37,9 +37,10 @@ class Config:
         self.redis_url = os.getenv("REDIS_URL")
         self.redis_password = os.getenv("REDIS_PASSWORD")
 
-        # Kafka configuration - fail-fast if not set
+        # Kafka configuration - optional
         self.kafka_bootstrap_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS")
         self.kafka_topic_prefix = os.getenv("KAFKA_TOPIC_PREFIX", "trading_arena")
+        self.kafka_enabled = os.getenv("KAFKA_ENABLED", "false").lower() == "true"
 
         # Environment detection - moved before Binance config
         self.environment = os.getenv("ENVIRONMENT", "development").lower()
@@ -86,8 +87,8 @@ class Config:
             if not self.redis_url:
                 raise ValueError("REDIS_URL must be set in production")
 
-            if not self.kafka_bootstrap_servers:
-                raise ValueError("KAFKA_BOOTSTRAP_SERVERS must be set in production")
+            if self.kafka_enabled and not self.kafka_bootstrap_servers:
+                raise ValueError("KAFKA_BOOTSTRAP_SERVERS must be set when KAFKA_ENABLED=true")
 
         else:
             # Development environment - fail-fast for security

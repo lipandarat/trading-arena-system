@@ -107,21 +107,30 @@ class RiskManager:
         cumulative_returns = df['cumulative'].values
 
         # Calculate Sharpe Ratio (annualized)
-        if len(returns) > 1 and np.std(returns) != 0:
-            sharpe_ratio = np.mean(returns) / np.std(returns) * np.sqrt(252)
+        if len(returns) > 1:
+            std_returns = np.std(returns)
+            if std_returns > 1e-10:  # More robust than != 0
+                sharpe_ratio = np.mean(returns) / std_returns * np.sqrt(252)
+            else:
+                sharpe_ratio = 0
         else:
             sharpe_ratio = 0
 
         # Calculate Sortino Ratio (downside deviation only)
         downside_returns = returns[returns < 0]
-        if len(downside_returns) > 1 and np.std(downside_returns) != 0:
-            sortino_ratio = np.mean(returns) / np.std(downside_returns) * np.sqrt(252)
+        if len(downside_returns) > 1:
+            std_downside = np.std(downside_returns)
+            if std_downside > 1e-10:  # More robust than != 0
+                sortino_ratio = np.mean(returns) / std_downside * np.sqrt(252)
+            else:
+                sortino_ratio = 0
         else:
             sortino_ratio = 0
 
         # Calculate Maximum and Current Drawdown
         peak = np.maximum.accumulate(cumulative_returns)
-        drawdown = (cumulative_returns - peak) / peak
+        # Prevent division by zero
+        drawdown = np.where(peak > 1e-10, (cumulative_returns - peak) / peak, 0)
         max_drawdown = np.min(drawdown) if len(drawdown) > 0 else 0
         current_drawdown = drawdown[-1] if len(drawdown) > 0 else 0
 
@@ -135,8 +144,8 @@ class RiskManager:
             var_95 = 0
 
         # Calculate Leverage Usage from current positions
-        total_exposure = sum(abs(pos.size * pos.mark_price) for pos in positions)
-        leverage_usage = total_exposure / current_capital if current_capital > 0 else 0
+        total_exposure = sum(abs(pos.size * pos.mark_price) for pos in positions if pos.size and pos.mark_price)
+        leverage_usage = total_exposure / current_capital if current_capital > 1e-10 else 0
 
         # Calculate Consistency Score (percentage of positive returns)
         positive_returns = len(returns[returns > 0])
@@ -290,8 +299,12 @@ class RiskManager:
         """
         # Validate input
         entry_price = market_data.get('price', 0)
-        if entry_price <= 0:
+        if entry_price <= 0 or entry_price is None:
             logger.warning("Invalid entry price for position sizing")
+            return 0
+
+        if current_capital <= 0 or current_capital is None:
+            logger.warning("Invalid current capital for position sizing")
             return 0
 
         # Calculate base risk amount

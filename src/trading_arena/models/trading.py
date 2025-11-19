@@ -150,7 +150,9 @@ class Trade(Base):
     @property
     def calculated_notional_value(self) -> float:
         """Calculate notional value from executed quantity, price, and leverage"""
-        if not all([self.executed_quantity, self.executed_price]):
+        if not self.executed_quantity or not self.executed_price:
+            return 0.0
+        if self.executed_quantity == 0 or self.executed_price == 0:
             return 0.0
         return self.executed_quantity * self.executed_price * (self.leverage or 1.0)
 
@@ -158,7 +160,9 @@ class Trade(Base):
     def return_percentage(self) -> float:
         """Calculate return as percentage"""
         notional = self.notional_value or self.calculated_notional_value
-        if notional == 0 or not notional:
+        if not notional or notional == 0:
+            return 0.0
+        if not self.pnl:
             return 0.0
         return (self.pnl / notional) * 100
 
@@ -282,12 +286,19 @@ class Position(Base):
     @property
     def return_percentage(self) -> float:
         """Calculate return as percentage of notional value"""
-        if self.notional_value == 0:
+        if not self.notional_value or self.notional_value == 0:
+            return 0.0
+        if not self.unrealized_pnl:
             return 0.0
         return self.unrealized_pnl / self.notional_value
 
     def calculate_unrealized_pnl(self, current_price: float) -> float:
         """Calculate unrealized P&L based on current price"""
+        if not current_price or not self.entry_price or not self.quantity:
+            return 0.0
+        if current_price == 0 or self.entry_price == 0 or self.quantity == 0:
+            return 0.0
+
         if self.is_long:
             return (current_price - self.entry_price) * self.quantity
         else:  # SHORT
