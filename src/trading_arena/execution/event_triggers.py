@@ -4,6 +4,12 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 from dataclasses import dataclass
 from enum import Enum
+import numpy as np
+
+from ..exchanges.binance_client import BinanceFuturesClient
+from ..db import get_db_session
+from ..models.agent import Agent
+from sqlalchemy import select, func
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +30,9 @@ class TriggerEvent:
     expiration: Optional[datetime] = None
 
 class EventTriggerManager:
-    def __init__(self):
+    def __init__(self, exchange_client: Optional[BinanceFuturesClient] = None):
         self.active_triggers: List[TriggerEvent] = []
+        self.exchange_client = exchange_client
         self.trigger_conditions = {
             TriggerType.VOLATILITY_SPIKE: self._check_volatility_spike,
             TriggerType.VOLUME_SURGE: self._check_volume_surge,
@@ -60,23 +67,45 @@ class EventTriggerManager:
         ]
 
     async def _check_volatility_spike(self) -> List[TriggerEvent]:
-        """Check for volatility spike triggers"""
+        """Check for volatility spike triggers using REAL Binance data"""
         try:
-            # Note: Market data integration requires live market data connection
-            # This would use recent price data from MarketDataAggregator
-            # Integration point for real-time volatility calculation
-            # recent_prices = await self._market_data_aggregator.get_recent_prices("BTCUSDT", 24)
-            # volatility = self._calculate_volatility(recent_prices)
+            if not self.exchange_client:
+                logger.warning("No exchange client available for volatility check")
+                return []
 
-            # For now, simulate a volatility check
-            current_volatility = 0.02  # Placeholder - would calculate from real data
+            # Fetch real kline data from Binance (last 24 hours, 1h candles)
+            klines = await self.exchange_client.client.futures_klines(
+                symbol="BTCUSDT",
+                interval='1h',
+                limit=24
+            )
 
-            if current_volatility > 0.05:  # 5% volatility threshold
+            if not klines or len(klines) < 10:
+                logger.warning("Insufficient kline data for volatility calculation")
+                return []
+
+            # Extract close prices
+            close_prices = [float(kline[4]) for kline in klines]
+
+            # Calculate returns
+            returns = np.diff(close_prices) / close_prices[:-1]
+
+            # Calculate volatility (standard deviation of returns, annualized)
+            current_volatility = np.std(returns) * np.sqrt(24 * 365)
+
+            logger.debug(f"Current volatility: {current_volatility:.4f}")
+
+            # Trigger if volatility exceeds 5% annualized
+            if current_volatility > 0.05:
                 return [TriggerEvent(
                     competition_type="volatility_challenge",
                     priority=0.9,
                     trigger_type=TriggerType.VOLATILITY_SPIKE,
-                    parameters={'volatility_level': current_volatility},
+                    parameters={
+                        'volatility_level': float(current_volatility),
+                        'symbol': 'BTCUSDT',
+                        'timeframe': '24h'
+                    },
                     timestamp=datetime.now(timezone.utc),
                     expiration=datetime.now(timezone.utc) + timedelta(hours=1)
                 )]
@@ -87,24 +116,49 @@ class EventTriggerManager:
             return []
 
     async def _check_volume_surge(self) -> List[TriggerEvent]:
-        """Check for trading volume surge triggers"""
+        """Check for trading volume surge triggers using REAL Binance data"""
         try:
-            # Note: Market data integration requires live market data connection
-            # This would compare current volume to historical average
-            # Integration point for real-time volume analysis:
-            # current_volume = await self._market_data_aggregator.get_current_volume("BTCUSDT")
-            # avg_volume = await self._market_data_aggregator.get_average_volume("BTCUSDT", 24)
-            # volume_ratio = current_volume / avg_volume
+            if not self.exchange_client:
+                logger.warning("No exchange client available for volume check")
+                return []
 
-            # For now, simulate a volume surge check
-            volume_ratio = 1.5  # Placeholder - would calculate from real data
+            # Fetch recent kline data (last 24 hours, 1h candles)
+            klines = await self.exchange_client.client.futures_klines(
+                symbol="BTCUSDT",
+                interval='1h',
+                limit=24
+            )
 
-            if volume_ratio > 2.0:  # Volume is 2x higher than average
+            if not klines or len(klines) < 20:
+                logger.warning("Insufficient kline data for volume calculation")
+                return []
+
+            # Extract volumes
+            volumes = [float(kline[5]) for kline in klines]
+
+            # Current volume (last hour)
+            current_volume = volumes[-1]
+
+            # Average volume (previous 20 hours, excluding current)
+            avg_volume = np.mean(volumes[-21:-1])
+
+            # Calculate volume ratio
+            volume_ratio = current_volume / avg_volume if avg_volume > 0 else 0
+
+            logger.debug(f"Volume ratio: {volume_ratio:.2f}x average")
+
+            # Trigger if volume is 2x higher than average
+            if volume_ratio > 2.0:
                 return [TriggerEvent(
                     competition_type="volume_sprint",
                     priority=0.8,
                     trigger_type=TriggerType.VOLUME_SURGE,
-                    parameters={'volume_ratio': volume_ratio},
+                    parameters={
+                        'volume_ratio': float(volume_ratio),
+                        'current_volume': float(current_volume),
+                        'avg_volume': float(avg_volume),
+                        'symbol': 'BTCUSDT'
+                    },
                     timestamp=datetime.now(timezone.utc),
                     expiration=datetime.now(timezone.utc) + timedelta(minutes=30)
                 )]
@@ -115,23 +169,72 @@ class EventTriggerManager:
             return []
 
     async def _check_price_breakout(self) -> List[TriggerEvent]:
-        """Check for price breakout triggers"""
+        """Check for price breakout triggers using REAL Binance data"""
         try:
-            # Note: Market data integration requires live market data connection
-            # This would analyze price patterns and support/resistance levels
-            # Integration point for real-time breakout detection:
-            # recent_prices = await self._market_data_aggregator.get_recent_prices("BTCUSDT", 48)
-            # breakout_detected = self._analyze_breakout_pattern(recent_prices)
+            if not self.exchange_client:
+                logger.warning("No exchange client available for breakout check")
+                return []
 
-            # For now, simulate a breakout check
-            breakout_detected = False  # Placeholder - would analyze from real data
+            # Fetch recent kline data (last 48 hours, 1h candles)
+            klines = await self.exchange_client.client.futures_klines(
+                symbol="BTCUSDT",
+                interval='1h',
+                limit=48
+            )
+
+            if not klines or len(klines) < 30:
+                logger.warning("Insufficient kline data for breakout calculation")
+                return []
+
+            # Extract high/low prices
+            highs = [float(kline[2]) for kline in klines]
+            lows = [float(kline[3]) for kline in klines]
+            closes = [float(kline[4]) for kline in klines]
+
+            # Calculate resistance and support levels (last 40 candles)
+            resistance = np.percentile(highs[-40:], 90)
+            support = np.percentile(lows[-40:], 10)
+
+            # Current price
+            current_price = closes[-1]
+
+            # Detect breakout
+            breakout_detected = False
+            breakout_type = None
+            breakout_strength = 0.0
+
+            # Bullish breakout (price above resistance)
+            if current_price > resistance:
+                breakout_strength = (current_price - resistance) / resistance
+                if breakout_strength > 0.01:  # 1% above resistance
+                    breakout_detected = True
+                    breakout_type = "bullish"
+
+            # Bearish breakout (price below support)
+            elif current_price < support:
+                breakout_strength = (support - current_price) / support
+                if breakout_strength > 0.01:  # 1% below support
+                    breakout_detected = True
+                    breakout_type = "bearish"
+
+            logger.debug(
+                f"Breakout check - Price: ${current_price:.2f}, "
+                f"Support: ${support:.2f}, Resistance: ${resistance:.2f}"
+            )
 
             if breakout_detected:
                 return [TriggerEvent(
                     competition_type="breakout_challenge",
                     priority=0.85,
                     trigger_type=TriggerType.PRICE_BREAKOUT,
-                    parameters={'breakout_strength': 'strong'},
+                    parameters={
+                        'breakout_strength': float(breakout_strength),
+                        'breakout_type': breakout_type,
+                        'current_price': float(current_price),
+                        'support': float(support),
+                        'resistance': float(resistance),
+                        'symbol': 'BTCUSDT'
+                    },
                     timestamp=datetime.now(timezone.utc),
                     expiration=datetime.now(timezone.utc) + timedelta(hours=2)
                 )]
@@ -158,24 +261,37 @@ class EventTriggerManager:
         return []
 
     async def _check_participation_threshold(self) -> List[TriggerEvent]:
-        """Check for participation-based triggers"""
+        """Check for participation-based triggers using REAL database query"""
         try:
-            # Note: Database integration would require agent manager connection
-            # This would query current active agents and competition participation
-            # Integration point for participation tracking:
-            # active_agents = await self._agent_manager.get_active_agent_count()
-            # participation_rate = await self._calculate_participation_rate()
+            # Query active agents from database
+            async with get_db_session() as session:
+                # Count active agents (status = 'active' and last_active within 24 hours)
+                cutoff_time = datetime.now(timezone.utc) - timedelta(hours=24)
 
-            # For now, simulate a participation check
-            active_agents = 45  # Placeholder - would query from real data
+                result = await session.execute(
+                    select(func.count(Agent.id))
+                    .where(
+                        Agent.status == 'active',
+                        Agent.last_active >= cutoff_time
+                    )
+                )
+                active_agents = result.scalar() or 0
+
             min_threshold = 30
 
+            logger.debug(f"Active agents: {active_agents}/{min_threshold}")
+
+            # Trigger if participation is below threshold
             if active_agents < min_threshold:
                 return [TriggerEvent(
                     competition_type="participation_boost",
                     priority=0.75,
                     trigger_type=TriggerType.PARTICIPATION_THRESHOLD,
-                    parameters={'active_agents': active_agents, 'min_threshold': min_threshold},
+                    parameters={
+                        'active_agents': active_agents,
+                        'min_threshold': min_threshold,
+                        'participation_rate': active_agents / min_threshold if min_threshold > 0 else 0
+                    },
                     timestamp=datetime.now(timezone.utc),
                     expiration=datetime.now(timezone.utc) + timedelta(hours=3)
                 )]
