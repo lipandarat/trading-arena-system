@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: trading_arena
+      POSTGRES_USER: arena_user
+      POSTGRES_PASSWORD: arena_pass
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - trading_arena_network
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - trading_arena_network
+
+  arena-api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://arena_user:arena_pass@postgres:5432/trading_arena
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ./src:/app/src
+    networks:
+      - trading_arena_network
+
+  arena-frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_API_URL=http://arena-api:8000
+    depends_on:
+      - arena-api
+    networks:
+      - trading_arena_network
+
+volumes:
+  postgres_data:
+
+networks:
+  trading_arena_network:
+    driver: bridge
