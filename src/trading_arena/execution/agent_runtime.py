@@ -270,22 +270,36 @@ class ContainerAgentRuntime:
 
     async def _create_agent_instance(self, config: Dict[str, Any]) -> AgentInterface:
         """Create appropriate agent instance based on configuration."""
-        llm_model = config.get('llm_model', 'mock')
+        from trading_arena.agents.llm_trading_agent import LLMTradingAgent
 
-        # FAIL FAST - No mock agents allowed in production
+        llm_model = config.get('llm_model', 'anthropic/claude-3.5-sonnet')
+
+        # FAIL FAST - Validate LLM model and API key
         environment = os.getenv('ENVIRONMENT', 'development').lower()
-        if environment == 'production' or llm_model == 'mock':
+        openrouter_key = os.getenv('OPENROUTER_API_KEY')
+
+        if not openrouter_key:
             raise ValueError(
-                f"PRODUCTION ERROR: Mock agents not allowed. "
-                f"LLM model '{llm_model}' is not valid for production. "
-                f"Real trading agents must be implemented."
+                "OPENROUTER_API_KEY must be set. "
+                "Get your key from https://openrouter.ai/keys"
             )
 
-        # This should be replaced with actual LLM-powered agent implementation
-        raise NotImplementedError(
-            f"LLM agent implementation for model '{llm_model}' is not yet available. "
-            f"Please implement real trading agents before production deployment."
+        # Validate model format
+        if '/' not in llm_model:
+            raise ValueError(
+                f"Invalid model format: '{llm_model}'. "
+                f"Expected format: 'provider/model' (e.g., 'anthropic/claude-3.5-sonnet')"
+            )
+
+        logger.info(f"Creating LLM trading agent with model: {llm_model}")
+
+        # Create real LLM-powered trading agent
+        agent = LLMTradingAgent(
+            agent_id=config['agent_id'],
+            config=config
         )
+
+        return agent
 
     async def _get_trading_symbols(self) -> List[str]:
         """Get list of trading symbols for this competition."""
